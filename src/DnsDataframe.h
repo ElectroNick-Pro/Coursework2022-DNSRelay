@@ -22,7 +22,7 @@ enum FLAG_BIT{
     RA_BIT                  =0b0000000010000000,
     AUTHENTICATED_BIT       =0b0000000000100000,
     REPLY_NOERR             =0b0000000000000000,
-    REPLY_FORMAT_ERR        =0b0000000000000000,
+    REPLY_FORMAT_ERR        =0b0000000000000001,
     REPLY_SERVER_FAILURE    =0b0000000000000010,
     REPLY_NAME_ERR          =0b0000000000000011,
     REPLY_NOT_IMPLEMENTED   =0b0000000000000100,
@@ -32,6 +32,7 @@ enum FLAG_BIT{
 u_int8_t* headerFromBuffer(u_int8_t* buf, DnsHeader* obj);
 u_int8_t* headerToBuffer(u_int8_t* buf, DnsHeader* obj);
 void free_header(DnsHeader* obj);
+void print_header(DnsHeader* obj);
 
 typedef struct DnsQuery {
     u_int8_t* name;
@@ -42,6 +43,7 @@ typedef struct DnsQuery {
 u_int8_t* queryFromBuffer(u_int8_t* buf, DnsQuery* obj);
 u_int8_t* queryToBuffer(u_int8_t* buf, DnsQuery* obj);
 void free_query(DnsQuery* obj);
+void print_query(DnsQuery* obj);
 
 typedef struct DnsResource {
     u_int8_t* name;
@@ -55,6 +57,7 @@ typedef struct DnsResource {
 u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj);
 u_int8_t* resourceToBuffer(u_int8_t* buf, DnsResource* obj);
 void free_resource(DnsResource* obj);
+void print_resource(DnsResource* obj, char* type);
 
 enum TYPE_BIT {
     TYPE_A           =1U,
@@ -77,8 +80,11 @@ void dataframeFromBuffer(u_int8_t* buf, DnsDataframe* obj);
 size_t dataframeToBuffer(u_int8_t* buf, DnsDataframe* obj);
 void free_dataframe(DnsDataframe* obj);
 
+
 char** get_ip(char* s, u_int16_t* retSize, char* file);
 void add_tuple(char* ip, char* domain, char* file);
 void remove_tuple(char* ip, char* domain, char* file);
+
+void print_bin(u_int8_t* arr, int len);
 
 #endif // __DNSDATAFRAME_H
