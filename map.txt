@@ -1,0 +1,12 @@
+10.3.9.161 www.bupt.edu.cn
+18.169.214.69 qmplus.qmul.ac.uk
+3.8.213.65 qmplus.qmul.ac.uk
+18.168.49.10 qmplus.qmul.ac.uk
+39.156.66.18 www.baidu.com
+39.156.66.14 www.baidu.com
+111.7.163.232 prts.wiki
+119.3.77.172 www.bilibili.com
+47.101.210.34 www.bilibili.com
+120.92.211.159 www.bilibili.com
+0.0.0.0 example.blocked1.com
+0.0.0.0 example.blocked2.com
