@@ -1,5 +1,5 @@
-#ifndef __DNSDATAFRAME_H
-#define __DNSDATAFRAME_H
+#ifndef __DNSRELAY_H
+#define __DNSRELAY_H
 
 #include <stdlib.h>
 
@@ -87,4 +87,4 @@ void remove_tuple(char* ip, char* domain, char* file);
 
 void print_bin(u_int8_t* arr, int len);
 
-#endif // __DNSDATAFRAME_H
+#endif // __DNSRELAY_H

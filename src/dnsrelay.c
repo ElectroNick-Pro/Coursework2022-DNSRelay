@@ -7,7 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <error.h>
-#include "DnsDataframe.h"
+#include "dnsrelay.h"
 
 #define IP4_DB "../map.txt"
 #define IP6_DB "../map6.txt"
@@ -622,13 +622,13 @@ int main(int argc, char* argv[]) {
             for(int i = 0; i < df2.header.answer_cnt; i++) {
                 if(df2.answers[i].type == TYPE_A) {
                     char* ip = __toReadableIPv4(df2.answers[i].data);
-                    char* domain = __toReadableAddr(df2.queries[0].name);
+                    char* domain = __toReadableAddr(df2.answers[i].name);
                     add_tuple(ip, domain, IP4_DB);
                     __free_toReadableIPv4(ip);
                     __free_toReadableAddr(domain);
                 } else if(df2.answers[i].type == TYPE_AAAA) {
                     char* ip = __toReadableIPv6(df2.answers[i].data);
-                    char* domain = __toReadableAddr(df2.queries[0].name);
+                    char* domain = __toReadableAddr(df2.answers[i].name);
                     add_tuple(ip, domain, IP6_DB);
                     __free_toReadableIPv6(ip);
                     __free_toReadableAddr(domain);

@@ -1,4 +1,3 @@
 2409:8c3c:901:7:3:0:0:3fb prts.wiki
 0:0:0:0:0:0:0:0 example.ip6.blocked1.com
 0:0:0:0:0:0:0:0 example.ip6.blocked2.com
-2001:da8:215:4038:0:0:0:161 vn46.bupt.edu.cn
