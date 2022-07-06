@@ -54,7 +54,7 @@ typedef struct DnsResource {
     u_int8_t* data;
 } DnsResource;
 
-u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj);
+u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj, u_int8_t* begBuf);
 u_int8_t* resourceToBuffer(u_int8_t* buf, DnsResource* obj);
 void free_resource(DnsResource* obj);
 void print_resource(DnsResource* obj, char* type);

@@ -12,7 +12,7 @@
 #define IP4_DB "../map.txt"
 #define IP6_DB "../map6.txt"
 
-int debug_level = 1;
+int debug_level = 2;
 
 // Allocated return
 u_int8_t* __toReadableAddr(u_int8_t* s) {
@@ -173,16 +173,35 @@ void free_query(DnsQuery* obj) {
     free(obj->name);
 }
 
-u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj) {
+u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj, u_int8_t* begBuf) {
     memset(obj, 0, sizeof(DnsResource));
     obj->name = malloc(sizeof(u_int8_t) * 100);
     memset(obj->name, 0, sizeof(u_int8_t) * 100);
-    if(*buf & 0xc0) {
-        memcpy(obj->name, buf, 2);
-        buf += 2;
-    } else {
-        strcpy(obj->name, buf);
-        buf += (strlen(buf) + 1);
+    u_int8_t* ptr = buf;
+    int i = 0;
+    int bufMove = 1;
+    while(1) {
+        if(*ptr == 0xc0) {
+            ptr = begBuf + *(ptr + 1);
+            if(bufMove) {
+                buf += 2;
+            }
+            bufMove = 0;
+            continue;
+        }
+        if (*ptr == 0) {
+            obj->name[i++] = 0;
+            if(bufMove) {
+                buf++;
+            }
+            break;
+        } else {
+            obj->name[i++] = *ptr;
+        }
+        if(bufMove) {
+            buf++;
+        }
+        ptr++;
     }
     memcpy(&obj->type, buf, sizeof(u_int16_t));
     obj->type = htons(obj->type);
@@ -231,6 +250,7 @@ void free_resource(DnsResource* obj) {
 }
 
 void dataframeFromBuffer(u_int8_t* buf, DnsDataframe* obj) {
+    u_int8_t* beg = buf;
     memset(obj, 0, sizeof(DnsDataframe));
     buf = headerFromBuffer(buf, &obj->header);
     obj->queries = malloc(sizeof(DnsQuery) * obj->header.question_cnt);
@@ -239,15 +259,15 @@ void dataframeFromBuffer(u_int8_t* buf, DnsDataframe* obj) {
     }
     obj->answers = malloc(sizeof(DnsResource) * obj->header.answer_cnt);
     for(int i = 0; i < obj->header.answer_cnt; i++) {
-        buf = resourceFromBuffer(buf, obj->answers + i);
+        buf = resourceFromBuffer(buf, obj->answers + i, beg);
     }
     obj->authorities = malloc(sizeof(DnsResource) * obj->header.authority_cnt);
     for(int i = 0; i < obj->header.authority_cnt; i++) {
-        buf = resourceFromBuffer(buf, obj->authorities + i);
+        buf = resourceFromBuffer(buf, obj->authorities + i, beg);
     }
     obj->additionals = malloc(sizeof(DnsResource) * obj->header.additional_cnt);
     for(int i = 0; i < obj->header.additional_cnt; i++) {
-        buf = resourceFromBuffer(buf, obj->additionals + i);
+        buf = resourceFromBuffer(buf, obj->additionals + i, beg);
     }
 }
 
@@ -389,15 +409,16 @@ void print_header(DnsHeader* obj) {
         strcpy(attrs[i - 1], "Recursion not available");
     }
     memset(attrs[i++], 0, 30);
-    if(obj->flag & REPLY_FORMAT_ERR) {
+    int rc = obj->flag & 0b1111;
+    if(rc == REPLY_FORMAT_ERR) {
         strcpy(attrs[i - 1], "Format error");
-    } else if (obj->flag & REPLY_SERVER_FAILURE) {
+    } else if (rc == REPLY_SERVER_FAILURE) {
         strcpy(attrs[i - 1], "Server failure");
-    } else if (obj->flag & REPLY_NAME_ERR) {
+    } else if (rc == REPLY_NAME_ERR) {
         strcpy(attrs[i - 1], "Name error");
-    } else if (obj->flag & REPLY_NOT_IMPLEMENTED) {
+    } else if (rc == REPLY_NOT_IMPLEMENTED) {
         strcpy(attrs[i - 1], "Not implemented");
-    } else if (obj->flag & REPLY_REFUSE) {
+    } else if (rc == REPLY_REFUSE) {
         strcpy(attrs[i - 1], "Refused");
     } else {
         strcpy(attrs[i - 1], "No error");
@@ -529,7 +550,6 @@ int main(int argc, char* argv[]) {
             ips = get_ip(dnsDomain, &df.header.answer_cnt, IP6_DB);
         }
         fprintf(stdout, "[timestamp:%ld]%hu records found for %s:\n", time(NULL), df.header.answer_cnt, dnsDomain);
-        __free_toReadableAddr(dnsDomain);
         
         if(df.header.answer_cnt && (!strcmp(ips[0], "0.0.0.0") || !strcmp(ips[0], "0:0:0:0:0:0:0:0"))) {
             fprintf(stdout, "0 (Refused)\n");
@@ -600,7 +620,11 @@ int main(int argc, char* argv[]) {
             struct sockaddr_in dns_addr;
             dns_addr.sin_family = AF_INET;
             dns_addr.sin_port = htons(53);
-            inet_aton("10.3.9.44", &dns_addr.sin_addr);
+            if(argc > 2) {
+                inet_aton(argv[2], &dns_addr.sin_addr);
+            } else {
+                inet_aton("10.3.9.44", &dns_addr.sin_addr);
+            }
             int dns_soc = socket(AF_INET, SOCK_DGRAM, 0);
             // Forward the entire data buffer and wait for reply
             fprintf(stdout, "[timestamp:%ld]Requesting for the forward DNS server.\n", time(NULL));
@@ -622,16 +646,14 @@ int main(int argc, char* argv[]) {
             for(int i = 0; i < df2.header.answer_cnt; i++) {
                 if(df2.answers[i].type == TYPE_A) {
                     char* ip = __toReadableIPv4(df2.answers[i].data);
-                    char* domain = __toReadableAddr(df2.answers[i].name);
-                    add_tuple(ip, domain, IP4_DB);
+                    add_tuple(ip, dnsDomain, IP4_DB);
+                    __free_toReadableAddr(dnsDomain);
                     __free_toReadableIPv4(ip);
-                    __free_toReadableAddr(domain);
                 } else if(df2.answers[i].type == TYPE_AAAA) {
                     char* ip = __toReadableIPv6(df2.answers[i].data);
-                    char* domain = __toReadableAddr(df2.answers[i].name);
-                    add_tuple(ip, domain, IP6_DB);
+                    add_tuple(ip, dnsDomain, IP6_DB);
                     __free_toReadableIPv6(ip);
-                    __free_toReadableAddr(domain);
+                    __free_toReadableAddr(dnsDomain);
                 }
             }
             if(debug_level > 1) {
