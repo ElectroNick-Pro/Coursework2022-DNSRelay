@@ -2,6 +2,8 @@
 #define __DNSRELAY_H
 
 #include <stdlib.h>
+#include <stdio.h>
+#include <netinet/in.h>
 
 typedef struct DnsHeader {
     u_int16_t id;
@@ -32,7 +34,7 @@ enum FLAG_BIT{
 u_int8_t* headerFromBuffer(u_int8_t* buf, DnsHeader* obj);
 u_int8_t* headerToBuffer(u_int8_t* buf, DnsHeader* obj);
 void free_header(DnsHeader* obj);
-void print_header(DnsHeader* obj);
+void print_header(DnsHeader* obj, FILE* fo);
 
 typedef struct DnsQuery {
     u_int8_t* name;
@@ -43,7 +45,7 @@ typedef struct DnsQuery {
 u_int8_t* queryFromBuffer(u_int8_t* buf, DnsQuery* obj);
 u_int8_t* queryToBuffer(u_int8_t* buf, DnsQuery* obj);
 void free_query(DnsQuery* obj);
-void print_query(DnsQuery* obj);
+void print_query(DnsQuery* obj, FILE* fo);
 
 typedef struct DnsResource {
     u_int8_t* name;
@@ -57,7 +59,7 @@ typedef struct DnsResource {
 u_int8_t* resourceFromBuffer(u_int8_t* buf, DnsResource* obj, u_int8_t* begBuf);
 u_int8_t* resourceToBuffer(u_int8_t* buf, DnsResource* obj);
 void free_resource(DnsResource* obj);
-void print_resource(DnsResource* obj, char* type);
+void print_resource(DnsResource* obj, char* type, FILE* fo);
 
 enum TYPE_BIT {
     TYPE_A           =1U,
@@ -85,6 +87,14 @@ char** get_ip(char* s, u_int16_t* retSize, char* file);
 void add_tuple(char* ip, char* domain, char* file);
 void remove_tuple(char* ip, char* domain, char* file);
 
-void print_bin(u_int8_t* arr, int len);
+void print_bin(u_int8_t* arr, int len, FILE* fo);
+
+typedef struct service_args {
+    struct sockaddr_in send_addr;
+    u_int8_t buf[1024];
+    int recv_len;
+    FILE* fp;
+} service_args;
+void* service_buffer(void* args);
 
 #endif // __DNSRELAY_H

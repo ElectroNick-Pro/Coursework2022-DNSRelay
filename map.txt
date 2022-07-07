@@ -9,3 +9,4 @@
 120.92.211.159 www.bilibili.com
 0.0.0.0 example.blocked1.com
 0.0.0.0 example.blocked2.com
+10.3.9.161 www.bupt.edu.cn

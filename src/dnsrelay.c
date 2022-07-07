@@ -5,12 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <time.h>
 #include <error.h>
+#include <pthread.h>
 #include "dnsrelay.h"
 
-#define IP4_DB "../map.txt"
-#define IP6_DB "../map6.txt"
+#define IP4_DB "map.txt"
+#define IP6_DB "map6.txt"
+
+#define MAX_CURRENT_THREADS 4
 
 int debug_level = 2;
 
@@ -347,19 +351,19 @@ void add_tuple(char* ip, char* domain, char* file) {
     fclose(fp);
 }
 
-void print_bin(u_int8_t* arr, int len) {
-    fprintf(stdout, "Data in hex:");
+void print_bin(u_int8_t* arr, int len, FILE* fo) {
+    fprintf(fo, "Data in hex:");
     for(int i = 0; i < len; i++) {
         if(!(i & 0b1111)) {
-            fprintf(stdout, "\n");
+            fprintf(fo, "\n");
         }
-        fprintf(stdout, "%02hx ", arr[i]);
+        fprintf(fo, "%02hx ", arr[i]);
     }
-    fprintf(stdout, "\n");
+    fprintf(fo, "\n");
 }
 
-void print_header(DnsHeader* obj) {
-    fprintf(stdout, "Transaction-ID:%hu Flags:0x%04hx Questions:%hu Answer-RRs:%hu Authority-RRs:%hu Additional-RRs: %hu\n",
+void print_header(DnsHeader* obj, FILE* fo) {
+    fprintf(fo, "Transaction-ID:%hu Flags:0x%04hx Questions:%hu Answer-RRs:%hu Authority-RRs:%hu Additional-RRs: %hu\n",
         obj->id, obj->flag, obj->question_cnt, obj->answer_cnt, obj->authority_cnt, obj->additional_cnt
     );
     char attrs[8][30];
@@ -423,53 +427,53 @@ void print_header(DnsHeader* obj) {
     } else {
         strcpy(attrs[i - 1], "No error");
     }
-    fprintf(stdout, "Flag attributes: ");
+    fprintf(fo, "Flag attributes: ");
     for(int j = 0; j < 8; j++) {
-        fprintf(stdout, "%s", attrs[j]);
+        fprintf(fo, "%s", attrs[j]);
         if(j < 7) {
-            fprintf(stdout, ", ");
+            fprintf(fo, ", ");
         }
     }
-    fprintf(stdout, "\n");
+    fprintf(fo, "\n");
 }
 
-void print_query(DnsQuery* obj) {
+void print_query(DnsQuery* obj, FILE* fo) {
     char* dnsDomain = __toReadableAddr(obj->name);
-    fprintf(stdout, "Query name: %s, type: %hu, class: %hu\n", dnsDomain, obj->type, obj->klass);
+    fprintf(fo, "Query name: %s, type: %hu, class: %hu\n", dnsDomain, obj->type, obj->klass);
     __free_toReadableAddr(dnsDomain);
 }
 
-void print_resource(DnsResource* obj, char* type) {
+void print_resource(DnsResource* obj, char* type, FILE* fo) {
     if(obj->type == TYPE_A || obj->type == TYPE_AAAA) {
         char* dnsDomain = __toReadableAddr(obj->name);
-        fprintf(stdout, "%s name: %s, type: %hu, class: %hu, TTL: %u\n", 
+        fprintf(fo, "%s name: %s, type: %hu, class: %hu, TTL: %u\n", 
             type, dnsDomain, obj->type, obj->klass, obj->TTL
         );
         __free_toReadableAddr(dnsDomain);
     } else {
-        fprintf(stdout, "%s name: %s, type: %hu, class: %hu, TTL: %u\n", 
+        fprintf(fo, "%s name: %s, type: %hu, class: %hu, TTL: %u\n", 
             type, "[N/A]", obj->type, obj->klass, obj->TTL
         );
     }
-    fprintf(stdout, "%s data-", type);
-    print_bin(obj->data, obj->length);
+    fprintf(fo, "%s data-", type);
+    print_bin(obj->data, obj->length, fo);
 }
 
-void print_dataframe(DnsDataframe* obj) {
-    fprintf(stdout, "DNS dataframe:\n");
-    print_header(&obj->header);
-    print_query(&obj->queries[0]);
-    fprintf(stdout, "Answer count: %hu\n", obj->header.answer_cnt);
+void print_dataframe(DnsDataframe* obj,FILE* fo) {
+    fprintf(fo, "DNS dataframe:\n");
+    print_header(&obj->header, fo);
+    print_query(&obj->queries[0], fo);
+    fprintf(fo, "Answer count: %hu\n", obj->header.answer_cnt);
     for(int i = 0; i < obj->header.answer_cnt; i++) {
-        print_resource(&obj->answers[i], "Answer");
+        print_resource(&obj->answers[i], "Answer", fo);
     }
-    fprintf(stdout, "Authority count: %hu\n", obj->header.authority_cnt);
+    fprintf(fo, "Authority count: %hu\n", obj->header.authority_cnt);
     for(int i = 0; i < obj->header.authority_cnt; i++) {
-        print_resource(&obj->authorities[i], "Authority");
+        print_resource(&obj->authorities[i], "Authority", fo);
     }
-    fprintf(stdout, "Additional count: %hu\n", obj->header.additional_cnt);
+    fprintf(fo, "Additional count: %hu\n", obj->header.additional_cnt);
     for(int i = 0; i < obj->header.additional_cnt; i++) {
-        print_resource(&obj->additionals[i], "Additional");
+        print_resource(&obj->additionals[i], "Additional", fo);
     }
 }
 
@@ -505,163 +509,198 @@ void remove_tuple(char* ip, char* domain, char* file) {
     free(ret);
 }
 
+struct sockaddr_in rcv_addr;
+int server_fd;
+u_int32_t le = sizeof(struct sockaddr);
+
+char* dns_ip = "10.3.9.44";
+
+pthread_rwlock_t db_lock;
+void* service_buffer(void* args) {
+    service_args* s_args = (service_args*)args;
+    u_int8_t* buf = s_args->buf;
+    struct sockaddr_in* send_addr = &s_args->send_addr;
+    int recv_len = s_args->recv_len;
+    FILE* fo = s_args->fp;
+    // Organize the data buffer
+    DnsDataframe df;
+    dataframeFromBuffer(buf, &df);
+    if(debug_level > 1) {
+        fprintf(fo, "Received buffer-");
+        print_bin(buf, recv_len, fo);
+        print_dataframe(&df, fo);
+    }
+    // get query info
+    DnsQuery* query = &df.queries[0];
+    u_int8_t* dnsDomain = __toReadableAddr(query->name);
+    // get cached ip list
+    char** ips;
+    if(query->type == TYPE_A) {
+        pthread_rwlock_rdlock(&db_lock);
+        ips = get_ip(dnsDomain, &df.header.answer_cnt, IP4_DB);
+        pthread_rwlock_unlock(&db_lock);
+    } else if(query->type == TYPE_AAAA) {
+        pthread_rwlock_rdlock(&db_lock);
+        ips = get_ip(dnsDomain, &df.header.answer_cnt, IP6_DB);
+        pthread_rwlock_unlock(&db_lock);
+    }
+    fprintf(fo, "[timestamp:%ld]%hu records found for %s:\n", time(NULL), df.header.answer_cnt, dnsDomain);
+    
+    if(df.header.answer_cnt && (!strcmp(ips[0], "0.0.0.0") || !strcmp(ips[0], "0:0:0:0:0:0:0:0"))) {
+        fprintf(fo, "0 (Refused)\n");
+        __free_get_ip(ips, &df.header.answer_cnt);
+        df.header.answer_cnt = 0;
+        df.header.flag |= (QR_RESPONSE_BIT | REPLY_NAME_ERR);
+        memset(buf, 0, 1024);
+        size_t len = dataframeToBuffer(buf, &df);
+        if(debug_level > 1) {
+            fprintf(fo, "Sending buffer-");
+            print_bin(buf, len, fo);
+            print_dataframe(&df, fo);
+        }
+        free_dataframe(&df);
+        sendto(server_fd, buf, len, 0, (struct sockaddr*)send_addr, le);
+        fprintf(fo, "[timestamp:%ld]Data sent to client\n\n", time(NULL));
+        fclose(fo);
+        free(args);
+        return NULL;
+    }
+
+    if(df.header.answer_cnt) {
+        df.header.flag |= (QR_RESPONSE_BIT | RA_BIT);
+        df.answers = malloc(sizeof(DnsResource) * df.header.answer_cnt);
+        if(query->type == TYPE_A) {
+            for(int i = 0; i < df.header.answer_cnt; i++) {
+                fprintf(fo, "%s\n", ips[i]);
+                DnsResource* answer = df.answers + i;
+                answer->name = malloc(100);
+                strcpy(answer->name, query->name);
+                answer->type = query->type;
+                answer->klass = query->klass;
+                answer->TTL = 10;
+                answer->length = 4;
+                answer->data = malloc(answer->length);
+                u_int8_t* data = __toDnsIPv4(ips[i]);
+                memcpy(answer->data, data, answer->length);
+                __free_toDnsIPv4(data);
+            }
+        } else if(query->type == TYPE_AAAA) {
+            for(int i = 0; i < df.header.answer_cnt; i++) {
+                fprintf(fo, "%s\n", ips[i]);
+                DnsResource* answer = df.answers + i;
+                answer->name = malloc(100);
+                strcpy(answer->name, query->name);
+                answer->type = query->type;
+                answer->klass = query->klass;
+                answer->TTL = 10;
+                answer->length = 16;
+                answer->data = malloc(answer->length);
+                u_int8_t* data = __toDnsIPv6(ips[i]);
+                memcpy(answer->data, data, answer->length);
+                __free_toDnsIPv6(data);
+            }
+        }
+        __free_get_ip(ips, &df.header.answer_cnt);
+        memset(buf, 0, 1024);
+        size_t len = dataframeToBuffer(buf, &df);
+        if(debug_level > 1) {
+            fprintf(fo, "Sending buffer-");
+            print_bin(buf, len, fo);
+            print_dataframe(&df, fo);
+        }
+        free_dataframe(&df);
+        sendto(server_fd, buf, len, 0, (struct sockaddr*)send_addr, le);
+        fprintf(fo, "[timestamp:%ld]Data sent to client\n", time(NULL));
+    } else {
+        free_dataframe(&df);
+        // Init socket for the forward DNS server
+        struct sockaddr_in dns_addr;
+        dns_addr.sin_family = AF_INET;
+        dns_addr.sin_port = htons(53);
+        inet_aton(dns_ip, &dns_addr.sin_addr);
+        // Forward the entire data buffer and wait for reply
+        fprintf(fo, "[timestamp:%ld]Requesting for the forward DNS server.\n", time(NULL));
+        u_int8_t dns_buf[1024];
+        memset(dns_buf, 0, 1024);
+        int dns_soc = socket(AF_INET, SOCK_DGRAM, 0);
+        sendto(dns_soc, buf, recv_len, 0, (struct sockaddr*)&dns_addr, le);
+        size_t len = recvfrom(dns_soc, dns_buf, 1024, 0, (struct sockaddr*)&dns_addr, &le);
+        close(dns_soc);
+        if(debug_level > 1) {
+            fprintf(fo, "Buffer from DNS server-");
+            print_bin(dns_buf, len, fo);
+        }
+        // Send back the reply to the request port
+        sendto(server_fd, dns_buf, len, 0, (struct sockaddr*)send_addr, le);
+        fprintf(fo, "[timestamp:%ld]Data sent to client\n", time(NULL));
+        // Cache the IP-domain in the backward data
+        fprintf(fo, "Parsing data\n");
+        DnsDataframe df2;
+        dataframeFromBuffer(dns_buf, &df2);
+        for(int i = 0; i < df2.header.answer_cnt; i++) {
+            if(df2.answers[i].type == TYPE_A) {
+                char* ip = __toReadableIPv4(df2.answers[i].data);
+                pthread_rwlock_wrlock(&db_lock);
+                add_tuple(ip, dnsDomain, IP4_DB);
+                pthread_rwlock_unlock(&db_lock);
+                __free_toReadableAddr(dnsDomain);
+                __free_toReadableIPv4(ip);
+            } else if(df2.answers[i].type == TYPE_AAAA) {
+                char* ip = __toReadableIPv6(df2.answers[i].data);
+                pthread_rwlock_wrlock(&db_lock);
+                add_tuple(ip, dnsDomain, IP6_DB);
+                pthread_rwlock_unlock(&db_lock);
+                __free_toReadableIPv6(ip);
+                __free_toReadableAddr(dnsDomain);
+            }
+        }
+        if(debug_level > 1) {
+            print_dataframe(&df2, fo);
+        }
+        free_dataframe(&df2);
+    }
+    fprintf(fo, "\n");
+    fclose(fo);
+    free(args);
+    return NULL;
+}
+
+pthread_t tid = 0;
+int cnt = 1;
+
 int main(int argc, char* argv[]) {
     if(argc > 1 && strcmp(argv[1], "-dd") == 0) {
         debug_level = 2;
     }
+    if(argc > 2) {
+        dns_ip = argv[2];
+    }
+    pthread_rwlock_init(&db_lock, NULL);
     // Init listening address
-    struct sockaddr_in rcv_addr;
     memset(&rcv_addr, 0, sizeof(struct sockaddr_in));
     rcv_addr.sin_family = AF_INET;
     rcv_addr.sin_port = htons(53);
     inet_aton("127.0.0.1",&rcv_addr.sin_addr);
     // Start socket
-    int server_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    server_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if(bind(server_fd, (struct sockaddr*)&rcv_addr, sizeof(struct sockaddr)) < 0) {
         perror("");
     }
 
-    u_int32_t le = sizeof(struct sockaddr);
-
     while(1) {
         // Waiting for package
-        struct sockaddr_in send_addr;
-        u_int8_t buf[1024];
-        int recv_len = recvfrom(server_fd, buf, 1024, 0, (struct sockaddr*)&send_addr, &le);
-
-        fprintf(stdout, "[timestamp:%ld]===Receive from %s:%hu===\n", time(NULL), inet_ntoa(send_addr.sin_addr), ntohs(send_addr.sin_port));
-
-        // Organize the data buffer
-        DnsDataframe df;
-        dataframeFromBuffer(buf, &df);
-        if(debug_level > 1) {
-            fprintf(stdout, "Received buffer-");
-            print_bin(buf, recv_len);
-            print_dataframe(&df);
+        service_args* s_args = malloc(sizeof(service_args));
+        s_args->recv_len = recvfrom(server_fd, s_args->buf, 1024, 0, (struct sockaddr*)&s_args->send_addr, &le);
+        char filename[20];
+        sprintf(filename, "log%d.txt", (cnt % MAX_CURRENT_THREADS) ? (cnt % MAX_CURRENT_THREADS) : MAX_CURRENT_THREADS);
+        s_args->fp = fopen(filename, "a");
+        fprintf(s_args->fp, "[timestamp:%ld]===Receive from %s:%hu===\n", time(NULL), inet_ntoa(s_args->send_addr.sin_addr), ntohs(s_args->send_addr.sin_port));
+        pthread_create(&tid, NULL, service_buffer, s_args);
+        if(cnt % MAX_CURRENT_THREADS == 0) {
+            pthread_join(tid, NULL);
+            tid++;
         }
-        // get query info
-        DnsQuery* query = &df.queries[0];
-        u_int8_t* dnsDomain = __toReadableAddr(query->name);
-        // get cached ip list
-        char** ips;
-        if(query->type == TYPE_A) {
-            ips = get_ip(dnsDomain, &df.header.answer_cnt, IP4_DB);
-        } else if(query->type == TYPE_AAAA) {
-            ips = get_ip(dnsDomain, &df.header.answer_cnt, IP6_DB);
-        }
-        fprintf(stdout, "[timestamp:%ld]%hu records found for %s:\n", time(NULL), df.header.answer_cnt, dnsDomain);
-        
-        if(df.header.answer_cnt && (!strcmp(ips[0], "0.0.0.0") || !strcmp(ips[0], "0:0:0:0:0:0:0:0"))) {
-            fprintf(stdout, "0 (Refused)\n");
-            __free_get_ip(ips, &df.header.answer_cnt);
-            df.header.answer_cnt = 0;
-            df.header.flag |= (QR_RESPONSE_BIT | REPLY_NAME_ERR);
-            memset(buf, 0, 1024);
-            size_t len = dataframeToBuffer(buf, &df);
-            if(debug_level > 1) {
-                fprintf(stdout, "Sending buffer-");
-                print_bin(buf, len);
-                print_dataframe(&df);
-            }
-            free_dataframe(&df);
-            sendto(server_fd, buf, len, 0, (struct sockaddr*)&send_addr, le);
-            fprintf(stdout, "[timestamp:%ld]Data sent to client\n", time(NULL));
-            continue;
-        }
-
-        if(df.header.answer_cnt) {
-            df.header.flag |= (QR_RESPONSE_BIT | RA_BIT);
-            df.answers = malloc(sizeof(DnsResource) * df.header.answer_cnt);
-            if(query->type == TYPE_A) {
-                for(int i = 0; i < df.header.answer_cnt; i++) {
-                    fprintf(stdout, "%s\n", ips[i]);
-                    DnsResource* answer = df.answers + i;
-                    answer->name = malloc(100);
-                    strcpy(answer->name, query->name);
-                    answer->type = query->type;
-                    answer->klass = query->klass;
-                    answer->TTL = 10;
-                    answer->length = 4;
-                    answer->data = malloc(answer->length);
-                    u_int8_t* data = __toDnsIPv4(ips[i]);
-                    memcpy(answer->data, data, answer->length);
-                    __free_toDnsIPv4(data);
-                }
-            } else if(query->type == TYPE_AAAA) {
-                for(int i = 0; i < df.header.answer_cnt; i++) {
-                    fprintf(stdout, "%s\n", ips[i]);
-                    DnsResource* answer = df.answers + i;
-                    answer->name = malloc(100);
-                    strcpy(answer->name, query->name);
-                    answer->type = query->type;
-                    answer->klass = query->klass;
-                    answer->TTL = 10;
-                    answer->length = 16;
-                    answer->data = malloc(answer->length);
-                    u_int8_t* data = __toDnsIPv6(ips[i]);
-                    memcpy(answer->data, data, answer->length);
-                    __free_toDnsIPv6(data);
-                }
-            }
-            __free_get_ip(ips, &df.header.answer_cnt);
-            memset(buf, 0, 1024);
-            size_t len = dataframeToBuffer(buf, &df);
-            if(debug_level > 1) {
-                fprintf(stdout, "Sending buffer-");
-                print_bin(buf, len);
-                print_dataframe(&df);
-            }
-            free_dataframe(&df);
-            sendto(server_fd, buf, len, 0, (struct sockaddr*)&send_addr, le);
-            fprintf(stdout, "[timestamp:%ld]Data sent to client\n", time(NULL));
-        } else {
-            free_dataframe(&df);
-            // Init socket for the forward DNS server
-            struct sockaddr_in dns_addr;
-            dns_addr.sin_family = AF_INET;
-            dns_addr.sin_port = htons(53);
-            if(argc > 2) {
-                inet_aton(argv[2], &dns_addr.sin_addr);
-            } else {
-                inet_aton("10.3.9.44", &dns_addr.sin_addr);
-            }
-            int dns_soc = socket(AF_INET, SOCK_DGRAM, 0);
-            // Forward the entire data buffer and wait for reply
-            fprintf(stdout, "[timestamp:%ld]Requesting for the forward DNS server.\n", time(NULL));
-            sendto(dns_soc, buf, recv_len, 0, (struct sockaddr*)&dns_addr, le);
-            u_int8_t dns_buf[1024];
-            memset(dns_buf, 0, 1024);
-            size_t len = recvfrom(dns_soc, dns_buf, 1024, 0, (struct sockaddr*)&dns_addr, &le);
-            if(debug_level > 1) {
-                fprintf(stdout, "Buffer from DNS server-");
-                print_bin(dns_buf, len);
-            }
-            // Send back the reply to the request port
-            sendto(server_fd, dns_buf, len, 0, (struct sockaddr*)&send_addr, le);
-            fprintf(stdout, "[timestamp:%ld]Data sent to client\n", time(NULL));
-            // Cache the IP-domain in the backward data
-            fprintf(stdout, "Parsing data\n");
-            DnsDataframe df2;
-            dataframeFromBuffer(dns_buf, &df2);
-            for(int i = 0; i < df2.header.answer_cnt; i++) {
-                if(df2.answers[i].type == TYPE_A) {
-                    char* ip = __toReadableIPv4(df2.answers[i].data);
-                    add_tuple(ip, dnsDomain, IP4_DB);
-                    __free_toReadableAddr(dnsDomain);
-                    __free_toReadableIPv4(ip);
-                } else if(df2.answers[i].type == TYPE_AAAA) {
-                    char* ip = __toReadableIPv6(df2.answers[i].data);
-                    add_tuple(ip, dnsDomain, IP6_DB);
-                    __free_toReadableIPv6(ip);
-                    __free_toReadableAddr(dnsDomain);
-                }
-            }
-            if(debug_level > 1) {
-                print_dataframe(&df2);
-            }
-            free_dataframe(&df2);
-        }
-        fprintf(stdout, "\n");
+        cnt++;
     }
     return 0;
 }
